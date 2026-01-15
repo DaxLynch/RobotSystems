@@ -1,4 +1,6 @@
 import os
+import logging
+from logdecorator import log_on_start, log_on_end, log_on_error
 
 # Determine if we're running on the robot or in simulation
 try:
@@ -15,12 +17,19 @@ except ImportError:
 
 import time
 
+# Set up logging
+logging_format = "%(asctime)s: %(message)s"
+logging.basicConfig(format=logging_format, level=logging.INFO, datefmt="%H:%M:%S")
+# Uncomment the following line to enable DEBUG level logging
+# logging.getLogger().setLevel(logging.DEBUG)
+
 
 def constrain(x, min_val, max_val):
     '''
     Constrains value to be within a range.
     '''
     return max(min_val, min(max_val, x))
+
 
 class Picarx(object):
     CONFIG = '/opt/picar-x/picar-x.conf'
@@ -44,6 +53,9 @@ class Picarx(object):
     # grayscale_pins: 3 adc channels
     # ultrasonic_pins: trig, echo2
     # config: path of config file
+    @log_on_start(logging.DEBUG, "Initializing Picarx...")
+    @log_on_error(logging.ERROR, "Error initializing Picarx: {e!r}")
+    @log_on_end(logging.DEBUG, "Picarx initialized successfully")
     def __init__(self, 
                 servo_pins:list=['P0', 'P1', 'P2'], 
                 motor_pins:list=['D4', 'D5', 'P13', 'P12'],
@@ -107,7 +119,9 @@ class Picarx(object):
         # --------- ultrasonic init ---------
         trig, echo= ultrasonic_pins
         self.ultrasonic = Ultrasonic(Pin(trig), Pin(echo, mode=Pin.IN, pull=Pin.PULL_DOWN))
-        
+
+    @log_on_start(logging.DEBUG, "Setting motor {motor:d} speed to {speed:d}")
+    @log_on_error(logging.ERROR, "Error setting motor speed: {e!r}")
     def set_motor_speed(self, motor, speed):
         ''' set motor speed
         
@@ -163,6 +177,7 @@ class Picarx(object):
         self.config_flie.set("picarx_dir_servo", "%s"%value)
         self.dir_servo_pin.angle(value)
 
+    @log_on_start(logging.DEBUG, "Setting direction servo angle to {value:d}")
     def set_dir_servo_angle(self, value):
         self.dir_current_angle = constrain(value, self.DIR_MIN, self.DIR_MAX)
         angle_value  = self.dir_current_angle + self.dir_cali_val
@@ -178,10 +193,12 @@ class Picarx(object):
         self.config_flie.set("picarx_cam_tilt_servo", "%s"%value)
         self.cam_tilt.angle(value)
 
+    @log_on_start(logging.DEBUG, "Setting camera pan angle to {value:d}")
     def set_cam_pan_angle(self, value):
         value = constrain(value, self.CAM_PAN_MIN, self.CAM_PAN_MAX)
         self.cam_pan.angle(-1*(value + -1*self.cam_pan_cali_val))
 
+    @log_on_start(logging.DEBUG, "Setting camera tilt angle to {value:d}")
     def set_cam_tilt_angle(self,value):
         value = constrain(value, self.CAM_TILT_MIN, self.CAM_TILT_MAX)
         self.cam_tilt.angle(-1*(value + -1*self.cam_tilt_cali_val))
@@ -190,6 +207,8 @@ class Picarx(object):
         self.set_motor_speed(1, speed)
         self.set_motor_speed(2, speed)
 
+    @log_on_start(logging.DEBUG, "Moving backward at speed {speed:d}")
+    @log_on_error(logging.ERROR, "Error moving backward: {e!r}")
     def backward(self, speed):
         current_angle = self.dir_current_angle
         if current_angle != 0:
@@ -207,6 +226,8 @@ class Picarx(object):
             self.set_motor_speed(1, -1*speed)
             self.set_motor_speed(2, speed)  
 
+    @log_on_start(logging.DEBUG, "Moving forward at speed {speed:d}")
+    @log_on_error(logging.ERROR, "Error moving forward: {e!r}")
     def forward(self, speed):
         current_angle = self.dir_current_angle
         if current_angle != 0:
@@ -224,6 +245,8 @@ class Picarx(object):
             self.set_motor_speed(1, speed)
             self.set_motor_speed(2, -1*speed)                  
 
+    @log_on_start(logging.DEBUG, "Stopping motors")
+    @log_on_end(logging.DEBUG, "Motors stopped")
     def stop(self):
         '''
         Execute twice to make sure it stops
@@ -233,6 +256,8 @@ class Picarx(object):
             self.motor_speed_pins[1].pulse_width_percent(0)
             time.sleep(0.002)
 
+    @log_on_start(logging.DEBUG, "Reading ultrasonic distance")
+    @log_on_end(logging.DEBUG, "Distance reading: {result!r}")
     def get_distance(self):
         return self.ultrasonic.read()
 
@@ -244,6 +269,8 @@ class Picarx(object):
         else:
             raise ValueError("grayscale reference must be a 1*3 list")
 
+    @log_on_start(logging.DEBUG, "Reading grayscale sensors")
+    @log_on_end(logging.DEBUG, "Grayscale data: {result!r}")
     def get_grayscale_data(self):
         return list.copy(self.grayscale.read())
 
@@ -266,17 +293,23 @@ class Picarx(object):
         else:
             raise ValueError("grayscale reference must be a 1*3 list")
 
+    @log_on_start(logging.DEBUG, "Resetting Picarx to default position")
     def reset(self):
         self.stop()
         self.set_dir_servo_angle(0)
         self.set_cam_tilt_angle(0)
         self.set_cam_pan_angle(0)
 
+    @log_on_start(logging.DEBUG, "Closing Picarx")
     def close(self):
         self.reset()
         self.ultrasonic.close()
 
+
 if __name__ == "__main__":
+    # Enable DEBUG logging for testing
+    logging.getLogger().setLevel(logging.DEBUG)
+    
     px = Picarx()
     px.forward(50)
     time.sleep(1)
