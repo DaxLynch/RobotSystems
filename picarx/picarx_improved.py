@@ -1,4 +1,6 @@
 import os
+import atexit
+import math
 import logging
 from logdecorator import log_on_start, log_on_end, log_on_error
 
@@ -120,6 +122,35 @@ class Picarx(object):
         trig, echo= ultrasonic_pins
         self.ultrasonic = Ultrasonic(Pin(trig), Pin(echo, mode=Pin.IN, pull=Pin.PULL_DOWN))
 
+        # Register atexit to ensure motors stop on program termination
+        atexit.register(self.stop)
+
+    def _ackerman_speed_scale(self, steering_angle):
+        """
+        Calculate wheel speed scaling based on Ackerman steering geometry.
+        Uses a sinusoidal function of steering angle for smoother turning.
+        
+        Returns (left_scale, right_scale) where each is between 0 and 1.
+        Positive angle = turning right (left wheel outer, right wheel inner)
+        Negative angle = turning left (right wheel outer, left wheel inner)
+        """
+        # Normalize steering angle to radians, scaled to reasonable range
+        angle_rad = math.radians(steering_angle)
+        
+        # Use cosine for inner wheel scaling (slows down inner wheel)
+        # The inner wheel should slow down more as steering angle increases
+        inner_scale = math.cos(angle_rad * 1.5)  # 1.5 factor for more pronounced effect
+        inner_scale = max(0.3, inner_scale)  # Don't go below 30% speed
+        
+        if steering_angle > 0:
+            # Turning right: right wheel is inner wheel
+            return (1.0, inner_scale)
+        elif steering_angle < 0:
+            # Turning left: left wheel is inner wheel
+            return (inner_scale, 1.0)
+        else:
+            return (1.0, 1.0)
+
     @log_on_start(logging.DEBUG, "Setting motor {motor:d} speed to {speed:d}")
     @log_on_error(logging.ERROR, "Error setting motor speed: {e!r}")
     def set_motor_speed(self, motor, speed):
@@ -127,7 +158,7 @@ class Picarx(object):
         
         param motor: motor index, 1 means left motor, 2 means right motor
         type motor: int
-        param speed: speed
+        param speed: speed (0-100)
         type speed: int      
         '''
         speed = constrain(speed, -100, 100)
@@ -137,10 +168,12 @@ class Picarx(object):
         elif speed < 0:
             direction = -1 * self.cali_dir_value[motor]
         speed = abs(speed)
-        # print(f"direction: {direction}, speed: {speed}")
-        if speed != 0:
-            speed = int(speed /2 ) + 50
+        
+        # Speed scaling removed - now using actual speed values (0-100)
         speed = speed - self.cali_speed_value[motor]
+        
+        logging.debug(f"Motor {motor+1}: direction={direction}, pwm={speed}")
+        
         if direction < 0:
             self.motor_direction_pins[motor].high()
             self.motor_speed_pins[motor].pulse_width_percent(speed)
@@ -211,39 +244,33 @@ class Picarx(object):
     @log_on_error(logging.ERROR, "Error moving backward: {e!r}")
     def backward(self, speed):
         current_angle = self.dir_current_angle
-        if current_angle != 0:
-            abs_current_angle = abs(current_angle)
-            if abs_current_angle > self.DIR_MAX:
-                abs_current_angle = self.DIR_MAX
-            power_scale = (100 - abs_current_angle) / 100.0 
-            if (current_angle / abs_current_angle) > 0:
-                self.set_motor_speed(1, -1*speed)
-                self.set_motor_speed(2, speed * power_scale)
-            else:
-                self.set_motor_speed(1, -1*speed * power_scale)
-                self.set_motor_speed(2, speed )
-        else:
-            self.set_motor_speed(1, -1*speed)
-            self.set_motor_speed(2, speed)  
+        left_scale, right_scale = self._ackerman_speed_scale(current_angle)
+        
+        # For backward, left motor is negative, right motor is positive
+        # Scale speeds based on Ackerman steering
+        left_speed = int(-1 * speed * left_scale)
+        right_speed = int(speed * right_scale)
+        
+        logging.debug(f"Backward: angle={current_angle}, left_scale={left_scale:.2f}, right_scale={right_scale:.2f}")
+        
+        self.set_motor_speed(1, left_speed)
+        self.set_motor_speed(2, right_speed)
 
     @log_on_start(logging.DEBUG, "Moving forward at speed {speed:d}")
     @log_on_error(logging.ERROR, "Error moving forward: {e!r}")
     def forward(self, speed):
         current_angle = self.dir_current_angle
-        if current_angle != 0:
-            abs_current_angle = abs(current_angle)
-            if abs_current_angle > self.DIR_MAX:
-                abs_current_angle = self.DIR_MAX
-            power_scale = (100 - abs_current_angle) / 100.0
-            if (current_angle / abs_current_angle) > 0:
-                self.set_motor_speed(1, 1*speed * power_scale)
-                self.set_motor_speed(2, -speed) 
-            else:
-                self.set_motor_speed(1, speed)
-                self.set_motor_speed(2, -1*speed * power_scale)
-        else:
-            self.set_motor_speed(1, speed)
-            self.set_motor_speed(2, -1*speed)                  
+        left_scale, right_scale = self._ackerman_speed_scale(current_angle)
+        
+        # For forward, left motor is positive, right motor is negative
+        # Scale speeds based on Ackerman steering
+        left_speed = int(speed * left_scale)
+        right_speed = int(-1 * speed * right_scale)
+        
+        logging.debug(f"Forward: angle={current_angle}, left_scale={left_scale:.2f}, right_scale={right_scale:.2f}")
+        
+        self.set_motor_speed(1, left_speed)
+        self.set_motor_speed(2, right_speed)
 
     @log_on_start(logging.DEBUG, "Stopping motors")
     @log_on_end(logging.DEBUG, "Motors stopped")
