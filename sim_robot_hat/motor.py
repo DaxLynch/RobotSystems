@@ -4,6 +4,9 @@ from .pwm import PWM
 from .pin import Pin
 from .filedb import fileDB
 
+# Set to None for simulation mode
+User = None
+
 class Motor():
     """Motor"""
     PERIOD = 4095
