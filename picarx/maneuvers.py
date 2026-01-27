@@ -66,7 +66,7 @@ class Maneuvers:
         2. Back up turning right (straighten out)
         3. Pull forward to center
         """
-        speed = speed or self.default_speed
+        speed = 50 #This is a good speed for parallel parking, i.e. to get it to move one car distance over
         
         # Step 1: Back up while turning left
         self.px.set_dir_servo_angle(-30)
@@ -83,7 +83,7 @@ class Maneuvers:
         # Step 3: Pull forward to center in spot
         self.px.set_dir_servo_angle(0)
         self.px.forward(speed)
-        time.sleep(0.5)
+        time.sleep(1.5)
         self.px.stop()
     
     def parallel_park_right(self, speed=None):
@@ -96,7 +96,10 @@ class Maneuvers:
         2. Back up turning left (straighten out)
         3. Pull forward to center
         """
-        speed = speed or self.default_speed
+        speed = 50 #This is a good speed for parallel parking, i.e. to get it to move one car distance over
+        
+        #Step 0: Stop the car
+        self.px.stop()
         
         # Step 1: Back up while turning right
         self.px.set_dir_servo_angle(30)
@@ -113,12 +116,12 @@ class Maneuvers:
         # Step 3: Pull forward to center in spot
         self.px.set_dir_servo_angle(0)
         self.px.forward(speed)
-        time.sleep(0.5)
+        time.sleep(1.5)
         self.px.stop()
     
     # ==================== Three-Point Turn (K-Turn) ====================
     
-    def k_turn_left(self, speed=None):
+    def k_turn_left(self):
         """
         Execute a three-point turn (K-turn) starting with a left turn.
         Used to turn around 180 degrees in a confined space.
@@ -128,7 +131,7 @@ class Maneuvers:
         2. Turn right while backing up
         3. Straighten and move forward
         """
-        speed = speed or self.default_speed
+        speed = 50
         
         # Step 1: Forward while turning hard left
         self.px.set_dir_servo_angle(-30)
@@ -145,13 +148,13 @@ class Maneuvers:
         # Step 3: Forward to complete the turn
         self.px.set_dir_servo_angle(-30)
         self.px.forward(speed)
-        time.sleep(0.8)
+        time.sleep(1.2)
         self.px.stop()
         
         # Straighten wheels
         self.px.set_dir_servo_angle(0)
     
-    def k_turn_right(self, speed=None):
+    def k_turn_right(self):
         """
         Execute a three-point turn (K-turn) starting with a right turn.
         Used to turn around 180 degrees in a confined space.
@@ -161,7 +164,7 @@ class Maneuvers:
         2. Turn left while backing up
         3. Straighten and move forward
         """
-        speed = speed or self.default_speed
+        speed = 50
         
         # Step 1: Forward while turning hard right
         self.px.set_dir_servo_angle(30)
@@ -178,7 +181,7 @@ class Maneuvers:
         # Step 3: Forward to complete the turn
         self.px.set_dir_servo_angle(30)
         self.px.forward(speed)
-        time.sleep(0.8)
+        time.sleep(1.2)
         self.px.stop()
         
         # Straighten wheels
@@ -196,17 +199,5 @@ if __name__ == "__main__":
     print("=" * 40)
     
     m = Maneuvers()
-    
-    print("\nTesting forward (1 second)...")
-    m.forward(speed=30, duration=1.0)
-    time.sleep(0.5)
-    
-    print("Testing backward (1 second)...")
-    m.backward(speed=30, duration=1.0)
-    time.sleep(0.5)
-    
-    print("Testing forward with left turn...")
-    m.forward(speed=30, duration=1.0, angle=-20)
-    time.sleep(0.5)
-    
-    print("\nManeuvers test complete!")
+    m.k_turn_left()
+
