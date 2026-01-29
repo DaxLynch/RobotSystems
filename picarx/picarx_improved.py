@@ -210,7 +210,7 @@ class Picarx(object):
         self.config_flie.set("picarx_dir_servo", "%s"%value)
         self.dir_servo_pin.angle(value)
 
-    @log_on_start(logging.DEBUG, "Setting direction servo angle to {value:d}")
+    @log_on_start(logging.DEBUG, "Setting direction servo angle to {value:.1f}")
     def set_dir_servo_angle(self, value):
         self.dir_current_angle = constrain(value, self.DIR_MIN, self.DIR_MAX)
         angle_value  = self.dir_current_angle + self.dir_cali_val
@@ -226,12 +226,12 @@ class Picarx(object):
         self.config_flie.set("picarx_cam_tilt_servo", "%s"%value)
         self.cam_tilt.angle(value)
 
-    @log_on_start(logging.DEBUG, "Setting camera pan angle to {value:d}")
+    @log_on_start(logging.DEBUG, "Setting camera pan angle to {value:.1f}")
     def set_cam_pan_angle(self, value):
         value = constrain(value, self.CAM_PAN_MIN, self.CAM_PAN_MAX)
         self.cam_pan.angle(-1*(value + -1*self.cam_pan_cali_val))
 
-    @log_on_start(logging.DEBUG, "Setting camera tilt angle to {value:d}")
+    @log_on_start(logging.DEBUG, "Setting camera tilt angle to {value:.1f}")
     def set_cam_tilt_angle(self,value):
         value = constrain(value, self.CAM_TILT_MIN, self.CAM_TILT_MAX)
         self.cam_tilt.angle(-1*(value + -1*self.cam_tilt_cali_val))
