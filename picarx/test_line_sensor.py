@@ -113,7 +113,7 @@ def main():
     
     # Initialize interpreter (dark line on light background)
     # line_lost_threshold: if ALL sensors read above this, line is considered lost
-    LINE_LOST_THRESHOLD = 1000
+    LINE_LOST_THRESHOLD = 1200
     interpreter = Interpreter(sensitivity=0.5, polarity='dark', line_lost_threshold=LINE_LOST_THRESHOLD)
     print(f"Line lost threshold: {LINE_LOST_THRESHOLD}")
     

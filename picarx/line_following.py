@@ -141,8 +141,9 @@ class Interpreter:
         """
         left, center, right = sensor_data
         
-        # Check if line is lost (all sensors reading high = light surface)
-        if left > self.line_lost_threshold and center > self.line_lost_threshold and right > self.line_lost_threshold:
+        # Check if line is lost (average of sensors above threshold = light surface)
+        avg_reading = (left + center + right) / 3.0
+        if avg_reading > self.line_lost_threshold:
             # Line is lost - return last known weighted position
             self.line_visible = False
             return self.weighted_position, False
@@ -410,7 +411,7 @@ def main():
     LIGHT_REF = 1500
     
     # PID gains (start with P only, tune from there)
-    KP = 25.0   # Proportional: how hard to steer based on error
+    KP = 50.0   # Proportional: how hard to steer based on error
     KI = 0.0    # Integral: correct accumulated drift (start at 0)
     KD = 0.0    # Derivative: dampen oscillations (start at 0)
     
@@ -439,7 +440,7 @@ def main():
     atexit.register(px.stop)
     
     # Line lost threshold - if all sensors above this, line is lost
-    LINE_LOST_THRESHOLD = 1000
+    LINE_LOST_THRESHOLD = 1100
     
     # Initialize sensor and interpreter
     sensor = Sensor(['A0', 'A1', 'A2'])
