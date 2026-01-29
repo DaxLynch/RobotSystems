@@ -20,7 +20,7 @@ from line_following import Sensor, Interpreter
 DEFAULT_PINS = ['A0', 'A1', 'A2']
 
 
-def auto_calibrate(sensor, samples=50, delay=0.02):
+def auto_calibrate(sensor, samples=3*50, delay=0.02):
     """
     Simple auto-calibration routine.
     

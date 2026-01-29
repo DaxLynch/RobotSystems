@@ -9,6 +9,7 @@ Contains:
 """
 
 import os
+import time
 import logging
 
 # Determine if we're running on the robot or in simulation
@@ -169,43 +170,95 @@ class Interpreter:
 
 
 # =====================================================================
-# SECTION 3.3: CONTROLLER CLASS
+# SECTION 3.3: PID CONTROLLER CLASS
 # =====================================================================
 
 class Controller:
     """
-    Converts position error into steering commands.
+    PID Controller for line following.
     
-    Uses proportional control to convert the position [-1, 1] 
-    into a steering angle for the robot.
+    Converts position error [-1, 1] into steering angle.
+    
+    Speed scaling:
+    - P term: Base gain (not scaled by speed)
+    - D term: Scaled by speed (faster = more derivative response needed)
+    - I term: Not scaled (accumulates error over time)
     """
     
-    def __init__(self, scaling_factor=30.0):
+    def __init__(self, kp=30.0, ki=0.0, kd=0.0):
         """
-        Initialize the controller.
+        Initialize the PID controller.
         
         Args:
-            scaling_factor: Multiplier for position-to-angle conversion.
-                           Default 30 means position=1 gives 30° steering.
+            kp: Proportional gain. position=1 with kp=30 gives 30° steering.
+            ki: Integral gain. Corrects accumulated error over time.
+            kd: Derivative gain. Dampens rapid changes in error.
         """
-        self.scaling_factor = scaling_factor
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
         
-        logging.debug(f"Controller initialized: scaling_factor={scaling_factor}")
+        # PID state
+        self.prev_error = 0.0
+        self.integral = 0.0
+        self.prev_time = None
+        
+        logging.debug(f"PID Controller initialized: kp={kp}, ki={ki}, kd={kd}")
     
-    def control(self, position, picarx=None):
+    def reset(self):
+        """Reset PID state (integral and previous error)."""
+        self.prev_error = 0.0
+        self.integral = 0.0
+        self.prev_time = None
+    
+    def control(self, position, speed=30, picarx=None):
         """
-        Calculate and optionally apply steering angle.
+        Calculate PID control output.
         
         Args:
-            position: Position value from interpreter [-1, 1]
+            position: Position error from interpreter [-1, 1]
+                     Positive = line is left, Negative = line is right
+            speed: Current forward speed (used to scale D term)
             picarx: Optional Picarx instance to apply steering
         
         Returns:
             Commanded steering angle (degrees)
         """
-        # Position > 0 means line is to the left, so turn left (negative angle)
-        # Position < 0 means line is to the right, so turn right (positive angle)
-        steering_angle = -1 * position * self.scaling_factor
+        import time
+        
+        # Error: we want position = 0 (centered)
+        # If position > 0, line is left, we need to turn left (negative steering)
+        error = position
+        
+        # Time delta for I and D terms
+        current_time = time.time()
+        if self.prev_time is None:
+            dt = 0.02  # Default to 50Hz
+        else:
+            dt = current_time - self.prev_time
+            dt = max(dt, 0.001)  # Prevent division by zero
+        self.prev_time = current_time
+        
+        # P term (not scaled by speed)
+        p_term = self.kp * error
+        
+        # I term (accumulate error, with anti-windup)
+        self.integral += error * dt
+        self.integral = max(-1.0, min(1.0, self.integral))  # Anti-windup clamp
+        i_term = self.ki * self.integral
+        
+        # D term (scaled by speed - faster = more derivative response)
+        # At higher speeds, the same physical deviation happens faster
+        # so we need more aggressive derivative response
+        derivative = (error - self.prev_error) / dt
+        speed_scale = speed / 30.0  # Normalize: speed=30 gives scale=1.0
+        d_term = self.kd * derivative * speed_scale
+        
+        self.prev_error = error
+        
+        # Total steering command
+        # Negative because positive error (line left) needs left turn (negative angle)
+        steering_angle = -1 * (p_term + i_term + d_term)
         
         # Clamp to servo limits
         steering_angle = max(-30, min(30, steering_angle))
@@ -227,7 +280,7 @@ class LineFollower:
     """
     
     def __init__(self, picarx=None, sensor_pins=['A0', 'A1', 'A2'],
-                 sensitivity=0.5, polarity='dark', scaling_factor=30.0):
+                 sensitivity=0.5, polarity='dark', kp=30.0, ki=0.0, kd=0.0):
         """
         Initialize the complete line following system.
         
@@ -236,12 +289,15 @@ class LineFollower:
             sensor_pins: ADC pins for grayscale sensors
             sensitivity: Interpreter sensitivity
             polarity: 'dark' or 'light' line
-            scaling_factor: Controller gain
+            kp: Proportional gain
+            ki: Integral gain
+            kd: Derivative gain
         """
         self.px = picarx
         self.sensor = Sensor(sensor_pins)
         self.interpreter = Interpreter(sensitivity, polarity)
-        self.controller = Controller(scaling_factor)
+        self.controller = Controller(kp, ki, kd)
+        self.speed = 30  # Default speed
     
     def calibrate(self, dark_ref, light_ref):
         """Set calibration values for the interpreter."""
@@ -260,8 +316,8 @@ class LineFollower:
         # Interpret
         position = self.interpreter.process(sensor_data)
         
-        # Control
-        steering_angle = self.controller.control(position, self.px)
+        # Control (pass speed for D term scaling)
+        steering_angle = self.controller.control(position, self.speed, self.px)
         
         return sensor_data, position, steering_angle
     
@@ -279,6 +335,8 @@ class LineFollower:
         if self.px is None:
             raise ValueError("Picarx instance required for follow()")
         
+        self.speed = speed
+        self.controller.reset()  # Reset PID state
         start_time = time.time()
         
         try:
@@ -299,11 +357,108 @@ class LineFollower:
 
 
 # =====================================================================
-# MAIN (for testing)
+# MAIN - 50Hz PID Line Following Loop
 # =====================================================================
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s: %(message)s")
+def main():
+    """
+    Run PID-based line following at 50Hz.
     
-    print("Line Following Module")
-    print("Run test_line_sensor.py for interactive testing")
+    Calibration: dark=200, light=1500
+    """
+    import time
+    import atexit
+    
+    # Import picarx
+    from picarx_improved import Picarx
+    
+    # ==================== CONFIGURATION ====================
+    # Calibration values
+    DARK_REF = 200
+    LIGHT_REF = 1500
+    
+    # PID gains (start with P only, tune from there)
+    KP = 25.0   # Proportional: how hard to steer based on error
+    KI = 0.0    # Integral: correct accumulated drift (start at 0)
+    KD = 0.0    # Derivative: dampen oscillations (start at 0)
+    
+    # Speed and loop settings
+    FORWARD_SPEED = 30  # Motor speed (0-100)
+    LOOP_HZ = 50        # Control loop frequency
+    LOOP_DELAY = 1.0 / LOOP_HZ  # 0.02 seconds = 20ms
+    
+    # =======================================================
+    
+    print("=" * 60)
+    print("       PID LINE FOLLOWING - 50Hz Loop")
+    print("=" * 60)
+    print()
+    print(f"  Calibration: dark={DARK_REF}, light={LIGHT_REF}")
+    print(f"  PID Gains:   Kp={KP}, Ki={KI}, Kd={KD}")
+    print(f"  Speed:       {FORWARD_SPEED}")
+    print(f"  Loop Rate:   {LOOP_HZ} Hz ({LOOP_DELAY*1000:.1f} ms)")
+    print()
+    
+    # Initialize robot
+    print("Initializing PiCar-X...")
+    px = Picarx()
+    
+    # Ensure we stop on exit
+    atexit.register(px.stop)
+    
+    # Initialize sensor and interpreter
+    sensor = Sensor(['A0', 'A1', 'A2'])
+    interpreter = Interpreter(polarity='dark')
+    interpreter.set_references(DARK_REF, LIGHT_REF)
+    
+    # Initialize PID controller
+    controller = Controller(kp=KP, ki=KI, kd=KD)
+    
+    print("Starting in 2 seconds... (Ctrl+C to stop)")
+    time.sleep(2)
+    
+    print()
+    print("  Position   Steering   [Left, Center, Right]")
+    print("-" * 60)
+    
+    try:
+        # Start moving forward
+        px.forward(FORWARD_SPEED)
+        
+        loop_count = 0
+        
+        while True:
+            loop_start = time.time()
+            
+            # 1. SENSE: Read grayscale sensors
+            sensor_data = sensor.read()
+            
+            # 2. INTERPRET: Convert to position [-1, +1]
+            position = interpreter.process(sensor_data)
+            
+            # 3. CONTROL: PID to steering angle
+            steering = controller.control(position, FORWARD_SPEED, px)
+            
+            # Print status every 10 loops (~5Hz display update)
+            if loop_count % 10 == 0:
+                print(f"\r  {position:+.3f}      {steering:+6.1f}°     [{sensor_data[0]:4d}, {sensor_data[1]:4d}, {sensor_data[2]:4d}]", 
+                      end="", flush=True)
+            
+            loop_count += 1
+            
+            # Maintain loop timing
+            elapsed = time.time() - loop_start
+            sleep_time = LOOP_DELAY - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                
+    except KeyboardInterrupt:
+        print("\n\nStopping...")
+    finally:
+        px.stop()
+        px.set_dir_servo_angle(0)  # Center steering
+        print("Done!")
+
+
+if __name__ == "__main__":
+    main()
