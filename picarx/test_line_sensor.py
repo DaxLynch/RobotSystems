@@ -133,7 +133,7 @@ def main():
     else:
         # Default values - adjust based on your sensors
         dark_ref = 200
-        light_ref = 2000
+        light_ref = 1500
         print(f"\nUsing default calibration: dark={dark_ref}, light={light_ref}")
     
     interpreter.set_references(dark_ref, light_ref)

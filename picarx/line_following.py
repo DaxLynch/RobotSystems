@@ -76,9 +76,11 @@ class Interpreter:
       -1 = line is far to the right (robot should turn right)
        0 = line is centered
       +1 = line is far to the left (robot should turn left)
+    
+    Handles line loss by holding the last known position.
     """
     
-    def __init__(self, sensitivity=0.5, polarity='dark'):
+    def __init__(self, sensitivity=0.5, polarity='dark', line_lost_amplify=1.2):
         """
         Initialize the interpreter.
         
@@ -87,13 +89,20 @@ class Interpreter:
                         Higher = requires more contrast to detect edges.
             polarity: 'dark' if following a dark line on light background,
                      'light' if following a light line on dark background.
+            line_lost_amplify: When line is lost, multiply last position by this
+                              factor to steer more aggressively (1.0 = no amplify)
         """
         self.sensitivity = sensitivity
         self.polarity = polarity.lower()
+        self.line_lost_amplify = line_lost_amplify
         
         # Calibration values (can be set later)
         self.dark_ref = 0      # Expected reading on dark surface
         self.light_ref = 4095  # Expected reading on light surface
+        
+        # Line loss tracking
+        self.last_known_position = 0.0
+        self.line_visible = True  # True if line currently detected
         
         logging.debug(f"Interpreter initialized: sensitivity={sensitivity}, polarity={polarity}")
     
@@ -120,6 +129,11 @@ class Interpreter:
             Position value in range [-1, 1]
             Positive = line is to the left (turn left)
             Negative = line is to the right (turn right)
+            
+        Note:
+            When line is lost (all sensors light), returns last known position
+            multiplied by line_lost_amplify factor. Check self.line_visible
+            to see if line is currently detected.
         """
         left, center, right = sensor_data
         
@@ -156,15 +170,30 @@ class Interpreter:
         
         total = left_on + center_on + right_on
         
-        if total < 0.01:
-            # No line detected - return 0 or last known position
-            return 0.0
+        # Threshold for "line detected" - at least one sensor should see significant dark
+        # This threshold is based on sensitivity setting
+        line_threshold = 0.3 * (1 - self.sensitivity)  # Lower sensitivity = higher threshold
+        
+        if total < line_threshold or max(left_on, center_on, right_on) < 0.2:
+            # LINE LOST - all sensors see light (or very weak signal)
+            self.line_visible = False
+            
+            # Return last known position, amplified to steer harder
+            amplified = self.last_known_position * self.line_lost_amplify
+            # Clamp to [-1, 1]
+            return max(-1.0, min(1.0, amplified))
+        
+        # LINE VISIBLE - calculate position normally
+        self.line_visible = True
         
         # Weighted average: left = +1, center = 0, right = -1
         position = (left_on * 1.0 + center_on * 0.0 + right_on * -1.0) / total
         
         # Clamp output to [-1, 1]
         position = max(-1.0, min(1.0, position))
+        
+        # Save for line loss recovery
+        self.last_known_position = position
         
         return position
 
@@ -418,8 +447,8 @@ def main():
     time.sleep(2)
     
     print()
-    print("  Position   Steering   [Left, Center, Right]")
-    print("-" * 60)
+    print("  Position   Steering   Status   [Left, Center, Right]")
+    print("-" * 70)
     
     try:
         # Start moving forward
@@ -439,9 +468,12 @@ def main():
             # 3. CONTROL: PID to steering angle
             steering = controller.control(position, FORWARD_SPEED, px)
             
+            # Line status indicator
+            status = "LINE" if interpreter.line_visible else "LOST"
+            
             # Print status every 10 loops (~5Hz display update)
             if loop_count % 10 == 0:
-                print(f"\r  {position:+.3f}      {steering:+6.1f}°     [{sensor_data[0]:4d}, {sensor_data[1]:4d}, {sensor_data[2]:4d}]", 
+                print(f"\r  {position:+.3f}      {steering:+6.1f}°    {status:4s}   [{sensor_data[0]:4d}, {sensor_data[1]:4d}, {sensor_data[2]:4d}]", 
                       end="", flush=True)
             
             loop_count += 1
