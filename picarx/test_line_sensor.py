@@ -112,7 +112,10 @@ def main():
     sensor = Sensor(DEFAULT_PINS)
     
     # Initialize interpreter (dark line on light background)
-    interpreter = Interpreter(sensitivity=0.5, polarity='dark')
+    # line_lost_threshold: if ALL sensors read above this, line is considered lost
+    LINE_LOST_THRESHOLD = 1000
+    interpreter = Interpreter(sensitivity=0.5, polarity='dark', line_lost_threshold=LINE_LOST_THRESHOLD)
+    print(f"Line lost threshold: {LINE_LOST_THRESHOLD}")
     
     # Calibration
     print("\nCalibration options:")
@@ -143,24 +146,25 @@ def main():
     print("Starting sensor loop... (Ctrl+C to stop)")
     print("=" * 60)
     print()
-    print("  Raw Sensors [L, C, R]      Position    Visual")
-    print("-" * 60)
+    print("  Raw Sensors [L, C, R]      Position  Status  Visual")
+    print("-" * 70)
     
     try:
         while True:
             # Read sensors
             sensor_data = sensor.read()
             
-            # Interpret position
-            position = interpreter.process(sensor_data)
+            # Interpret position - returns (position, line_visible)
+            position, line_visible = interpreter.process(sensor_data)
             
             # Format output
             sensor_str = f"[{sensor_data[0]:4d}, {sensor_data[1]:4d}, {sensor_data[2]:4d}]"
             pos_str = f"{position:+.3f}"
+            status = "LINE" if line_visible else "LOST"
             bar_str = print_bar(position)
             
             # Print on same line (overwrite)
-            print(f"\r  {sensor_str}    {pos_str}    {bar_str}", end="", flush=True)
+            print(f"\r  {sensor_str}    {pos_str}  {status}   {bar_str}", end="", flush=True)
             
             time.sleep(0.05)  # 20 Hz update rate
             

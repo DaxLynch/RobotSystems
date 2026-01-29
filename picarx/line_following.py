@@ -77,10 +77,12 @@ class Interpreter:
        0 = line is centered
       +1 = line is far to the left (robot should turn left)
     
-    Handles line loss by holding the last known position.
+    Features:
+    - Running weighted average (2/3 new + 1/3 old) for smoothing
+    - Line-lost detection: if all sensors read high (light), return last known position
     """
     
-    def __init__(self, sensitivity=0.5, polarity='dark', line_lost_amplify=1.2):
+    def __init__(self, sensitivity=0.5, polarity='dark', line_lost_threshold=1000):
         """
         Initialize the interpreter.
         
@@ -89,22 +91,22 @@ class Interpreter:
                         Higher = requires more contrast to detect edges.
             polarity: 'dark' if following a dark line on light background,
                      'light' if following a light line on dark background.
-            line_lost_amplify: When line is lost, multiply last position by this
-                              factor to steer more aggressively (1.0 = no amplify)
+            line_lost_threshold: If ALL sensors read above this value, 
+                                line is considered lost. Default 1000.
         """
         self.sensitivity = sensitivity
         self.polarity = polarity.lower()
-        self.line_lost_amplify = line_lost_amplify
+        self.line_lost_threshold = line_lost_threshold
         
         # Calibration values (can be set later)
         self.dark_ref = 0      # Expected reading on dark surface
         self.light_ref = 4095  # Expected reading on light surface
         
-        # Line loss tracking
-        self.last_known_position = 0.0
-        self.line_visible = True  # True if line currently detected
+        # Running weighted average for position smoothing
+        self.weighted_position = 0.0
+        self.line_visible = True
         
-        logging.debug(f"Interpreter initialized: sensitivity={sensitivity}, polarity={polarity}")
+        logging.debug(f"Interpreter initialized: sensitivity={sensitivity}, polarity={polarity}, line_lost_threshold={line_lost_threshold}")
     
     def set_references(self, dark_ref, light_ref):
         """
@@ -118,6 +120,11 @@ class Interpreter:
         self.light_ref = light_ref
         logging.debug(f"References set: dark={dark_ref}, light={light_ref}")
     
+    def reset(self):
+        """Reset the weighted average and line state."""
+        self.weighted_position = 0.0
+        self.line_visible = True
+    
     def process(self, sensor_data):
         """
         Convert sensor readings to position value.
@@ -126,16 +133,22 @@ class Interpreter:
             sensor_data: List of 3 sensor values [left, center, right]
         
         Returns:
-            Position value in range [-1, 1]
-            Positive = line is to the left (turn left)
-            Negative = line is to the right (turn right)
-            
-        Note:
-            When line is lost (all sensors light), returns last known position
-            multiplied by line_lost_amplify factor. Check self.line_visible
-            to see if line is currently detected.
+            Tuple of (position, line_visible):
+            - position: Value in range [-1, 1]
+              Positive = line is to the left (turn left)
+              Negative = line is to the right (turn right)
+            - line_visible: True if line is detected, False if lost
         """
         left, center, right = sensor_data
+        
+        # Check if line is lost (all sensors reading high = light surface)
+        if left > self.line_lost_threshold and center > self.line_lost_threshold and right > self.line_lost_threshold:
+            # Line is lost - return last known weighted position
+            self.line_visible = False
+            return self.weighted_position, False
+        
+        # Line is visible - calculate new position
+        self.line_visible = True
         
         # Normalize readings to [0, 1] range
         # Lower value = darker (on the line for dark polarity)
@@ -170,32 +183,21 @@ class Interpreter:
         
         total = left_on + center_on + right_on
         
-        # Threshold for "line detected" - at least one sensor should see significant dark
-        # This threshold is based on sensitivity setting
-        line_threshold = 0.3 * (1 - self.sensitivity)  # Lower sensitivity = higher threshold
-        
-        if total < line_threshold or max(left_on, center_on, right_on) < 0.2:
-            # LINE LOST - all sensors see light (or very weak signal)
+        if total < 0.01:
+            # Very low total - treat as line lost
             self.line_visible = False
-            
-            # Return last known position, amplified to steer harder
-            amplified = self.last_known_position * self.line_lost_amplify
-            # Clamp to [-1, 1]
-            return max(-1.0, min(1.0, amplified))
-        
-        # LINE VISIBLE - calculate position normally
-        self.line_visible = True
+            return self.weighted_position, False
         
         # Weighted average: left = +1, center = 0, right = -1
-        position = (left_on * 1.0 + center_on * 0.0 + right_on * -1.0) / total
+        raw_position = (left_on * 1.0 + center_on * 0.0 + right_on * -1.0) / total
         
-        # Clamp output to [-1, 1]
-        position = max(-1.0, min(1.0, position))
+        # Clamp to [-1, 1]
+        raw_position = max(-1.0, min(1.0, raw_position))
         
-        # Save for line loss recovery
-        self.last_known_position = position
+        # Update running weighted average: 2/3 new + 1/3 old
+        self.weighted_position = (2.0/3.0) * raw_position + (1.0/3.0) * self.weighted_position
         
-        return position
+        return self.weighted_position, True
 
 
 # =====================================================================
@@ -337,18 +339,18 @@ class LineFollower:
         Perform one cycle of sense-interpret-control.
         
         Returns:
-            Tuple of (sensor_data, position, steering_angle)
+            Tuple of (sensor_data, position, steering_angle, line_visible)
         """
         # Sense
         sensor_data = self.sensor.read()
         
-        # Interpret
-        position = self.interpreter.process(sensor_data)
+        # Interpret - returns (position, line_visible)
+        position, line_visible = self.interpreter.process(sensor_data)
         
         # Control (pass speed for D term scaling)
         steering_angle = self.controller.control(position, self.speed, self.px)
         
-        return sensor_data, position, steering_angle
+        return sensor_data, position, steering_angle, line_visible
     
     def follow(self, speed=30, duration=None, loop_delay=0.02):
         """
@@ -372,9 +374,10 @@ class LineFollower:
             self.px.forward(speed)
             
             while True:
-                sensor_data, position, steering = self.update()
+                sensor_data, position, steering, line_visible = self.update()
                 
-                logging.debug(f"Sensors: {sensor_data}, Position: {position:.2f}, Steering: {steering:.1f}°")
+                status = "LINE" if line_visible else "LOST"
+                logging.debug(f"Sensors: {sensor_data}, Position: {position:.2f}, Steering: {steering:.1f}°, Status: {status}")
                 
                 if duration and (time.time() - start_time) >= duration:
                     break
@@ -435,14 +438,19 @@ def main():
     # Ensure we stop on exit
     atexit.register(px.stop)
     
+    # Line lost threshold - if all sensors above this, line is lost
+    LINE_LOST_THRESHOLD = 1000
+    
     # Initialize sensor and interpreter
     sensor = Sensor(['A0', 'A1', 'A2'])
-    interpreter = Interpreter(polarity='dark')
+    interpreter = Interpreter(polarity='dark', line_lost_threshold=LINE_LOST_THRESHOLD)
     interpreter.set_references(DARK_REF, LIGHT_REF)
     
     # Initialize PID controller
     controller = Controller(kp=KP, ki=KI, kd=KD)
     
+    print(f"  Line Lost: threshold={LINE_LOST_THRESHOLD}")
+    print()
     print("Starting in 2 seconds... (Ctrl+C to stop)")
     time.sleep(2)
     
@@ -463,17 +471,18 @@ def main():
             sensor_data = sensor.read()
             
             # 2. INTERPRET: Convert to position [-1, +1]
-            position = interpreter.process(sensor_data)
+            # Returns (position, line_visible)
+            position, line_visible = interpreter.process(sensor_data)
             
             # 3. CONTROL: PID to steering angle
             steering = controller.control(position, FORWARD_SPEED, px)
             
-            # Line status indicator
-            status = "LINE" if interpreter.line_visible else "LOST"
+            # Status indicator
+            status = "LINE" if line_visible else "LOST"
             
             # Print status every 10 loops (~5Hz display update)
             if loop_count % 10 == 0:
-                print(f"\r  {position:+.3f}      {steering:+6.1f}°    {status:4s}   [{sensor_data[0]:4d}, {sensor_data[1]:4d}, {sensor_data[2]:4d}]", 
+                print(f"\r  {position:+.3f}      {steering:+6.1f}°    {status}   [{sensor_data[0]:4d}, {sensor_data[1]:4d}, {sensor_data[2]:4d}]", 
                       end="", flush=True)
             
             loop_count += 1
